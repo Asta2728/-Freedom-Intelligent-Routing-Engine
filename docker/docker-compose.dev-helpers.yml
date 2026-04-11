@@ -1,0 +1,44 @@
+# Development Helpers Configuration
+#
+# Usage: docker-compose -f docker-compose.dev-helpers.yml up -d
+#
+# This file is used to spin up ONLY the database and Redis services.
+# It allows developers to run the Python application (`uvicorn` and `taskiq`) 
+# directly on their host machine for easier debugging and hot-reloading.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: datasaur_dev_db
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-datasaur}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: datasaur_dev_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

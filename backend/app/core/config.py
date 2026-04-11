@@ -1,0 +1,194 @@
+"""Application configuration using Pydantic BaseSettings."""
+# ruff: noqa: I001 - Imports structured for Jinja2 template conditionals
+
+from pathlib import Path
+from typing import Literal
+
+from pydantic import AliasChoices, Field, computed_field, field_validator, ValidationInfo
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def find_env_file() -> Path | None:
+    """Find .env file in current or parent directories."""
+    current = Path.cwd()
+    for path in [current, current.parent]:
+        env_file = path / ".env"
+        if env_file.exists():
+            return env_file
+    return None
+
+
+class Settings(BaseSettings):
+    """Application settings."""
+
+    model_config = SettingsConfigDict(
+        env_file=find_env_file(),
+        env_ignore_empty=True,
+        extra="ignore",
+    )
+
+    # === Project ===
+    PROJECT_NAME: str = "datasaur-project"
+    API_V1_STR: str = "/api/v1"
+    DEBUG: bool = True
+    ENVIRONMENT: Literal["development", "local", "staging", "production"] = "local"
+
+    # === Storage ===
+    STORAGE_TYPE: Literal["local", "s3"] = "local"
+    UPLOAD_DIR: str = "uploads"
+
+    # === Logfire ===
+    LOGFIRE_TOKEN: str | None = None
+    LOGFIRE_SERVICE_NAME: str = "datasaur-project"
+    LOGFIRE_ENVIRONMENT: str = "development"
+
+    # Allowed values: "postgres" or "sqlite"
+    DB_TYPE: Literal["postgres", "sqlite"] = "sqlite"
+
+    # PostgreSQL
+    POSTGRES_HOST: str = "localhost"
+    POSTGRES_PORT: int = 5432
+    POSTGRES_USER: str = "postgres"
+    POSTGRES_PASSWORD: str = ""
+    POSTGRES_DB: str = "datasaur"
+
+    # SQLite
+    SQLITE_DB_FILE: str = "datasaur.db"
+
+    # === Redis ===
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_PASSWORD: str | None = None
+    REDIS_DB: int = 0
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def REDIS_URL(self) -> str:
+        """Build Redis connection URL."""
+        if self.REDIS_PASSWORD:
+            return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def DATABASE_URL(self) -> str:
+        """Build async database connection URL."""
+        if self.DB_TYPE == "sqlite":
+            return f"sqlite+aiosqlite:///./{self.SQLITE_DB_FILE}"
+        return (
+            f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+        )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def DATABASE_URL_SYNC(self) -> str:
+        """Build sync database connection URL (for Alembic)."""
+        if self.DB_TYPE == "sqlite":
+            return f"sqlite:///./{self.SQLITE_DB_FILE}"
+        return (
+            f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+        )
+
+    # Pool configuration
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT: int = 30
+
+    # === Auth (SECRET_KEY for JWT/Session/Admin) ===
+    SECRET_KEY: str = "change-me-in-production-use-openssl-rand-hex-32"
+
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def validate_secret_key(cls, v: str, info: ValidationInfo) -> str:
+        """Validate SECRET_KEY is secure in production."""
+        if len(v) < 32:
+            raise ValueError("SECRET_KEY must be at least 32 characters long")
+        # Get environment from values if available
+        env = info.data.get("ENVIRONMENT", "local") if info.data else "local"
+        if v == "change-me-in-production-use-openssl-rand-hex-32" and env == "production":
+            raise ValueError(
+                "SECRET_KEY must be changed in production! "
+                "Generate a secure key with: openssl rand -hex 32"
+            )
+        return v
+
+    # === JWT Settings ===
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60  # 60 minutes
+    REFRESH_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+    ALGORITHM: str = "HS256"
+
+    # === Taskiq ===
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def TASKIQ_BROKER_URL(self) -> str:
+        """Build Taskiq broker URL (using Redis)."""
+        return self.REDIS_URL
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def TASKIQ_RESULT_BACKEND(self) -> str:
+        """Build Taskiq result backend URL (using Redis)."""
+        return self.REDIS_URL
+
+    # === AI Agent (pydantic_ai, openai) ===
+    DEEPSEEK_API_KEY: str = ""
+    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
+    AI_MODEL: str = "deepseek-chat"
+    AI_TEMPERATURE: float = 0.7
+    AI_FRAMEWORK: str = "pydantic_ai"
+    LLM_PROVIDER: str = "deepseek"
+    
+    AGENT_MODEL: str = Field(
+        default="gpt-4o-mini",
+    )
+    OPENAI_API_KEY: str = ""
+    OPENAI_BASE_URL: str | None = None
+
+    GEMINI_API_KEY: str = ""
+    GEMINI_VISION_MODEL: str = "gemini-2.5-flash"
+
+    # === External Services ===
+    YANDEX_API_KEY: str = ""
+    FIRE_INGESTION_BATCH_SIZE: int = 10
+
+    @field_validator("FIRE_INGESTION_BATCH_SIZE")
+    @classmethod
+    def validate_fire_ingestion_batch_size(cls, v: int) -> int:
+        """Validate ingestion batch size is within safe bounds."""
+        if v < 1:
+            raise ValueError("FIRE_INGESTION_BATCH_SIZE must be at least 1")
+        if v > 1000:
+            raise ValueError("FIRE_INGESTION_BATCH_SIZE cannot exceed 1000")
+        return v
+
+    # === CORS ===
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:8080",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8080",
+    ]
+    CORS_ALLOW_CREDENTIALS: bool = True
+    CORS_ALLOW_METHODS: list[str] = ["*"]
+    CORS_ALLOW_HEADERS: list[str] = ["*"]
+
+    @field_validator("CORS_ORIGINS")
+    @classmethod
+    def validate_cors_origins(cls, v: list[str], info: ValidationInfo) -> list[str]:
+        """Warn if CORS_ORIGINS is too permissive in production."""
+        env = info.data.get("ENVIRONMENT", "local") if info.data else "local"
+        if "*" in v and env == "production":
+            raise ValueError(
+                "CORS_ORIGINS cannot contain '*' in production! Specify explicit allowed origins."
+            )
+        return v
+
+
+    # === Logging ===
+    LOG_FILE: str = "app.log"
+    SQL_ECHO: bool = False
+
+
+settings = Settings()
